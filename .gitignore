@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.next/
+out/
+data/
+AICaller-data/
+build/
+.env
+*.tsbuildinfo
+next-env.d.ts
