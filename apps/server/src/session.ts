@@ -424,6 +424,10 @@ const LABEL: Record<Speaker, string> = { them: "Them", ai: "AI", system: "System
 async function writeOutcome(ctx: AppContext, userId: string, callId: string, plan: CallPlan, end: { result: CallResult | null; summary: string }) {
   const s = getSettings(ctx.store, userId);
   let outcome: CallOutcome = { result: end.result, summary: end.summary, referenceNumbers: [], followUps: [] };
+  const save = () => {
+    ctx.store.setOutcome(callId, outcome);
+    ctx.hub.emit(userId, { type: "outcome", callId, outcome });
+  };
   if (isConfigured(s)) {
     const transcript = ctx.store
       .listTranscript(callId)
@@ -431,18 +435,24 @@ async function writeOutcome(ctx: AppContext, userId: string, callId: string, pla
       .join("\n")
       .slice(-30_000);
     const previous = ctx.store.getPlaybook(userId, plan.company);
-    const out = await askJson({
-      client: makeClient(s),
-      model: planningModel(s),
-      system: summaryPrompt(plan.company, previous),
-      messages: [
-        {
-          role: "user",
-          content: `Issue: ${plan.issue}\nDesired outcome: ${plan.desiredOutcome}\nResult reported by the AI: ${end.result ?? "none"}\nAI's summary: ${end.summary || "none"}\n\nTranscript:\n${transcript}`,
-        },
-      ],
-      schema: SummarySchema,
-    });
+    let out: z.infer<typeof SummarySchema>;
+    try {
+      out = await askJson({
+        client: makeClient(s),
+        model: planningModel(s),
+        system: summaryPrompt(plan.company, previous),
+        messages: [
+          {
+            role: "user",
+            content: `Issue: ${plan.issue}\nDesired outcome: ${plan.desiredOutcome}\nResult reported by the AI: ${end.result ?? "none"}\nAI's summary: ${end.summary || "none"}\n\nTranscript:\n${transcript}`,
+          },
+        ],
+        schema: SummarySchema,
+      });
+    } catch (err) {
+      save(); // keep the AI's own result and summary when the summary model fails
+      throw err;
+    }
     outcome = { result: end.result, summary: out.summary, referenceNumbers: out.referenceNumbers, followUps: out.followUps };
     const profile = ctx.store.getProfile(userId);
     const banned = [
@@ -460,6 +470,5 @@ async function writeOutcome(ctx: AppContext, userId: string, callId: string, pla
         .slice(0, 10);
     ctx.store.savePlaybook(userId, plan.company, clean(out.playbook.menuPaths), clean(out.playbook.tactics));
   }
-  ctx.store.setOutcome(callId, outcome);
-  ctx.hub.emit(userId, { type: "outcome", callId, outcome });
+  save();
 }

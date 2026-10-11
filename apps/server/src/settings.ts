@@ -152,6 +152,8 @@ export function settingsView(s: EffectiveSettings, twilioEnabled: boolean): Sett
     ttsModel: s.ttsModel,
     ttsVoice: s.ttsVoice,
     configured: isConfigured(s),
+    serverStt: sttEnabled(s),
+    serverTts: ttsEnabled(s),
     twilioEnabled,
   };
 }

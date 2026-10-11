@@ -145,6 +145,8 @@ export interface SettingsView {
   ttsModel: string;
   ttsVoice: string;
   configured: boolean;
+  serverStt: boolean;
+  serverTts: boolean;
   twilioEnabled: boolean;
 }
 

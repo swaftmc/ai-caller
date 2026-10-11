@@ -10,6 +10,7 @@ import { CallPlanSchema, type WsEvent } from "@ai-caller/shared";
 import { loadSecrets, makeCipher } from "../src/crypto.js";
 import { DEFAULT_USER, Store } from "../src/db.js";
 import { Hub } from "../src/events.js";
+import { buildApp } from "../src/http.js";
 import { CallSession } from "../src/session.js";
 import { applySettingsUpdate, getSettings, settingsView } from "../src/settings.js";
 
@@ -113,7 +114,8 @@ await new Promise<void>((ok) => fake.listen(0, "127.0.0.1", ok));
 const baseUrl = `http://127.0.0.1:${(fake.address() as AddressInfo).port}/v1`;
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aicaller-smoke-"));
-const store = new Store(dir, makeCipher(loadSecrets(dir).encryptionKey));
+const secrets = loadSecrets(dir);
+const store = new Store(dir, makeCipher(secrets.encryptionKey));
 const events: WsEvent[] = [];
 const hub = new Hub();
 hub.emit = (_u, e) => void events.push(e);
@@ -215,6 +217,15 @@ try {
   assert.ok(!dbBytes.includes(API_KEY) && !dbBytes.includes("99887766"), "no plaintext secrets in the database files");
   const view = settingsView(getSettings(store, DEFAULT_USER), false);
   assert.ok(view.hasApiKey && !JSON.stringify(view).includes(API_KEY));
+  const app = await buildApp({ ...ctx, secrets, host: "0.0.0.0" });
+  const auth = { authorization: `Bearer ${secrets.dashboardToken}` };
+  const settingsRes = await app.inject({ method: "GET", url: "/api/settings", headers: auth });
+  assert.equal(settingsRes.statusCode, 200);
+  assert.ok(settingsRes.json().hasApiKey && !settingsRes.body.includes(API_KEY), "GET /api/settings never returns the key");
+  const profileRes = await app.inject({ method: "GET", url: "/api/profile", headers: auth });
+  assert.ok(profileRes.body.includes("••••7766") && !profileRes.body.includes("99887766"), "stored details are masked");
+  assert.equal((await app.inject({ method: "GET", url: "/api/settings" })).statusCode, 401);
+  await app.close();
 
   // Enforcement: commitments without approval and unshared details are rejected and audited.
   const call2 = store.createCall(DEFAULT_USER, { ...plan, sharedDetailKeys: [] });
