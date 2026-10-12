@@ -70,7 +70,9 @@ export async function buildApp(o: AppOptions): Promise<FastifyInstance> {
     if (!loopback) return;
     const port = (app.server.address() as AddressInfo | null)?.port;
     const host = (req.headers.host ?? "").toLowerCase();
-    const ok = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, ...(channel?.allowHosts ?? [])].includes(host);
+    // The public tunnel host (Twilio mode) may reach only the signed /twilio/ webhooks and media socket.
+    const extra = req.url.startsWith("/twilio/") ? (channel?.allowHosts ?? []) : [];
+    const ok = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, ...extra].includes(host);
     if (!ok) return reply.code(403).send({ error: "Forbidden host" });
   });
 

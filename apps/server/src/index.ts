@@ -7,6 +7,7 @@ import { isPackaged } from "./env.js";
 import { Hub } from "./events.js";
 import { buildApp } from "./http.js";
 import { getSettings, isConfigured } from "./settings.js";
+import { registerTwilio } from "./twilio/index.js";
 
 function portFree(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -34,7 +35,7 @@ async function main() {
   const hub = new Hub();
   const host = process.env.HOST || "127.0.0.1";
   const ctx = { store, hub };
-  const app = await buildApp({ ...ctx, secrets, host });
+  const app = await buildApp({ ...ctx, secrets, host, extraChannel: (a) => registerTwilio(a, ctx) });
 
   const first = Number(process.env.PORT) || 4317;
   let port = 0;

@@ -132,6 +132,15 @@ function CallView() {
       {call.plan.channel === "speakerphone" && call.status !== "draft" && (
         <SpeakerphoneConsole callId={call.id} phoneNumber={call.plan.phoneNumber} live={data.live} settings={settings} />
       )}
+      {call.plan.channel === "twilio" && data.live && (
+        <div className="card row">
+          <span className="muted">The server is on the phone call.</span>
+          <button onClick={() => api(`/calls/${call.id}/takeover`, "POST", {}).catch((e: Error) => setError(e.message))}>Join (ring my phone)</button>
+          <button className="danger" onClick={() => api(`/calls/${call.id}/end`, "POST", {}).catch((e: Error) => setError(e.message))}>
+            End call
+          </button>
+        </div>
+      )}
       {data.live && <TellTheAi callId={call.id} />}
       {call.outcome && <OutcomeCard outcome={call.outcome} />}
       {resolved.length > 0 && (

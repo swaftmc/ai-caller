@@ -1,4 +1,4 @@
-// Unit check for crypto, the SQLite store and settings precedence. Run: npm run check
+// Unit check for crypto, the SQLite store, settings precedence and the Twilio guards. Run: npm run check
 import "../src/env.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -8,6 +8,8 @@ import { CallPlanSchema } from "@ai-caller/shared";
 import { loadSecrets, makeCipher, maskValue, safeEqual } from "../src/crypto.js";
 import { DEFAULT_USER, Store } from "../src/db.js";
 import { applySettingsUpdate, getSettings, settingsView } from "../src/settings.js";
+import { dialableError } from "../src/twilio/dialable.js";
+import { twilioConfig, twilioSignature, validTwilioRequest } from "../src/twilio/twilio.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aicaller-check-"));
 try {
@@ -101,6 +103,35 @@ try {
   assert.equal(getSettings(store, DEFAULT_USER).apiKey, "");
   applySettingsUpdate(store, DEFAULT_USER, { provider: "ollama" });
   assert.equal(settingsView(getSettings(store, DEFAULT_USER), false).configured, true, "ollama needs no key");
+
+  // Twilio mode: dialable numbers, all-six-settings gate, webhook signatures.
+  assert.equal(dialableError("+18005550100"), null);
+  assert.equal(dialableError("+14165550100"), null, "Canada shares +1");
+  assert.match(String(dialableError("+442071234567")), /Country code not allowed/);
+  assert.equal(dialableError("+442071234567", ["1", "44"]), null);
+  assert.match(String(dialableError("+19005550100")), /900\/976/);
+  assert.match(String(dialableError("+12129765555")), /900\/976/);
+  assert.match(String(dialableError("+1911")), /E\.164|Emergency/);
+  assert.match(String(dialableError("+19115550100")), /N11/);
+  assert.match(String(dialableError("+12124115555")), /N11/);
+  assert.match(String(dialableError("18005550100")), /E\.164/);
+  const env = {
+    PUBLIC_URL: "https://example.ngrok.app/",
+    TWILIO_ACCOUNT_SID: "AC1",
+    TWILIO_AUTH_TOKEN: "tok",
+    TWILIO_FROM_NUMBER: "+18005550199",
+    OPENAI_API_KEY: "sk",
+    DEEPGRAM_API_KEY: "dg",
+  };
+  assert.equal(twilioConfig(env)?.publicUrl, "https://example.ngrok.app");
+  for (const k of Object.keys(env)) assert.equal(twilioConfig({ ...env, [k]: "" }), null, `Twilio stays off without ${k}`);
+  const cfg = twilioConfig(env)!;
+  const params = { CallSid: "CA123", CallStatus: "completed" };
+  const sig = twilioSignature("tok", "https://example.ngrok.app/twilio/status?callId=x", params);
+  assert.ok(validTwilioRequest(cfg, "/twilio/status?callId=x", params, sig));
+  assert.ok(!validTwilioRequest(cfg, "/twilio/status?callId=y", params, sig), "signature covers the URL");
+  assert.ok(!validTwilioRequest(cfg, "/twilio/status?callId=x", { ...params, CallStatus: "failed" }, sig), "signature covers the params");
+  assert.ok(!validTwilioRequest(cfg, "/twilio/status?callId=x", params, undefined));
 
   // Data survives reopening.
   store.close();

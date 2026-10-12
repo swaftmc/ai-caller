@@ -137,7 +137,7 @@ export class CallSession {
 
   // ---- turn machinery ----
 
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  protected enqueue<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.queue.then(fn, fn);
     this.queue = run.catch(() => undefined);
     return run;
