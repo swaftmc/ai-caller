@@ -47,12 +47,15 @@ export function registerStatic(app: FastifyInstance) {
     if (req.method !== "GET" && req.method !== "HEAD") return reply.code(404).send({ error: "Not found" });
     const url = new URL(req.url, "http://local");
     let pathname: string;
+    let rawPath: string;
     try {
       pathname = decodeURIComponent(url.pathname);
+      rawPath = decodeURIComponent(req.url.split("?")[0]);
     } catch {
       return reply.code(400).send({ error: "Bad path" });
     }
-    if (req.url.includes("..") || pathname.includes("..") || pathname.includes("\\") || pathname.includes("\0")) {
+    // Check the raw path too: the URL parser silently resolves "/%2e%2e/" segments.
+    if ([rawPath, pathname].some((p) => p.includes("..") || p.includes("\\") || p.includes("\0"))) {
       return reply.code(400).send({ error: "Bad path" });
     }
     if (pathname.startsWith("/api/")) return reply.code(404).send({ error: "Not found" });
