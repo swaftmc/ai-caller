@@ -7,7 +7,9 @@ const WHO: Record<TranscriptEntry["speaker"], string> = { them: "Them", ai: "AI"
 
 export function Transcript({ entries }: { entries: TranscriptEntry[] }) {
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "nearest" }), [entries.length]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" });
+  }, [entries.length]);
   return (
     <div className="card">
       <h2>Transcript</h2>

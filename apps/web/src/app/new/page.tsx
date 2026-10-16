@@ -30,7 +30,9 @@ export default function NewCallPage() {
     api<{ details: AccountDetailView[] }>("/profile").then((p) => setDetailKeys(p.details.map((d) => d.key)), () => undefined);
     api<SettingsView>("/settings").then((s) => setTwilio(s.twilioEnabled), () => undefined);
   }, []);
-  useEffect(() => chatEnd.current?.scrollIntoView({ block: "end" }), [messages]);
+  useEffect(() => {
+    chatEnd.current?.scrollIntoView({ block: "end" });
+  }, [messages]);
 
   const send = async () => {
     const text = input.trim();
