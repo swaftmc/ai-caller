@@ -4,6 +4,16 @@ AI Caller talks to company support lines for you. You dial the support number on
 
 It works with any OpenAI-compatible model provider: OpenRouter, OpenAI, Groq, Ollama, Anthropic's OpenAI-compatible endpoint, or a custom URL.
 
+## Download
+
+Get `AICaller.exe` (Windows x64) from the [latest release](https://github.com/swaftmc/ai-caller/releases/latest) and check it against `SHA256SUMS.txt`:
+
+```powershell
+(Get-FileHash .\AICaller.exe -Algorithm SHA256).Hash
+```
+
+This is a pre-release: it has not made a real phone call yet (see the end of this file).
+
 ## Using the exe
 
 1. Put `AICaller.exe` in any folder and double-click it. There is no installer and no database server.
@@ -117,3 +127,9 @@ Tested on Windows 11 x64 with Node 24.17.0:
 - Twilio mode end to end: placing calls, the Realtime audio bridge, Deepgram on hold, key presses, Join/conference, answering-machine detection.
 - Running the exe on a clean PC, on Windows Sandbox, or with Microsoft Defender on (only this laptop, which runs CrowdStrike).
 - The linux, arm64 and macOS executables: they build, but none of them were run.
+
+## Licence
+
+[PolyForm Noncommercial 1.0.0](LICENSE): free to use, change and share for non-commercial purposes. For commercial
+use, ask first: open an issue at [swaftmc/ai-caller](https://github.com/swaftmc/ai-caller/issues). This is source-available, not OSI open source.
+Third-party libraries bundled into the exe, and the Node.js runtime it embeds, keep their own licences.
