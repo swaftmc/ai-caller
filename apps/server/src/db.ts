@@ -1,15 +1,17 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   LIVE_STATUSES,
   type AccountDetailView,
+  type AdminUser,
   type Approval,
   type ApprovalStatus,
   type CallOutcome,
   type CallPlan,
   type CallRecord,
   type CallStatus,
+  type Invite,
   type Playbook,
   type Profile,
   type Speaker,
@@ -17,14 +19,31 @@ import {
 } from "@ai-caller/shared";
 import { maskValue, type Cipher } from "./crypto.js";
 
-export const DEFAULT_USER = "local";
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  is_admin INTEGER NOT NULL DEFAULT 0,
   name TEXT NOT NULL DEFAULT '',
   callback_phone TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invites (
+  email TEXT PRIMARY KEY,
+  invited_by TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS login_tokens (
+  token_hash TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS account_details (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +111,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 type Row = Record<string, SQLInputValue>;
 const now = () => new Date().toISOString();
+const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
 export const companyKey = (company: string) => company.trim().toLowerCase().replace(/\s+/g, " ");
 
 export interface AuditEvent {
@@ -109,8 +129,93 @@ export class Store {
     const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
     this.db = new DatabaseSync(path.join(dataDir, "aicaller.db"));
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+    const userCols = this.all("PRAGMA table_info(users)").map((c) => String(c.name));
+    if (userCols.length && !userCols.includes("email")) {
+      this.db.close();
+      throw new Error("This data folder was made by the old AICaller.exe and cannot be used by the web app. Point DATA_DIR at a new folder.");
+    }
     this.db.exec(SCHEMA);
-    this.db.prepare("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)").run(DEFAULT_USER, now());
+  }
+
+  // Users, invites, sign-in links and sessions
+  private toUser(r: Row): AdminUser {
+    return { id: String(r.id), email: String(r.email), name: String(r.name), isAdmin: Number(r.is_admin) === 1, createdAt: String(r.created_at) };
+  }
+  getUser(id: string): AdminUser | null {
+    const r = this.get("SELECT * FROM users WHERE id = ?", id);
+    return r ? this.toUser(r) : null;
+  }
+  getUserByEmail(email: string): AdminUser | null {
+    const r = this.get("SELECT * FROM users WHERE email = ?", email);
+    return r ? this.toUser(r) : null;
+  }
+  createUser(email: string, isAdmin: boolean): AdminUser {
+    const id = randomUUID();
+    this.run("INSERT INTO users (id, email, is_admin, created_at) VALUES (?, ?, ?, ?)", id, email, isAdmin ? 1 : 0, now());
+    return this.getUser(id)!;
+  }
+  setAdmin(id: string, isAdmin: boolean) {
+    this.run("UPDATE users SET is_admin = ? WHERE id = ?", isAdmin ? 1 : 0, id);
+  }
+  listUsers(): AdminUser[] {
+    return this.all("SELECT * FROM users ORDER BY created_at").map((r) => this.toUser(r));
+  }
+  /** Deletes the user and, through ON DELETE CASCADE, all their rows; also drops their invite. */
+  deleteUser(id: string): boolean {
+    const user = this.getUser(id);
+    if (!user) return false;
+    this.run("DELETE FROM invites WHERE email = ?", user.email);
+    this.run("DELETE FROM login_tokens WHERE email = ?", user.email);
+    return Number(this.run("DELETE FROM users WHERE id = ?", id).changes) > 0;
+  }
+  addInvite(email: string, invitedBy: string) {
+    this.run("INSERT OR IGNORE INTO invites (email, invited_by, created_at) VALUES (?, ?, ?)", email, invitedBy, now());
+  }
+  hasInvite(email: string): boolean {
+    return Boolean(this.get("SELECT 1 AS x FROM invites WHERE email = ?", email));
+  }
+  deleteInvite(email: string): boolean {
+    return Number(this.run("DELETE FROM invites WHERE email = ?", email).changes) > 0;
+  }
+  /** Invites whose email has not signed in yet. */
+  pendingInvites(): Invite[] {
+    return this.all("SELECT i.email, i.created_at FROM invites i LEFT JOIN users u ON u.email = i.email WHERE u.id IS NULL ORDER BY i.created_at").map(
+      (r) => ({ email: String(r.email), createdAt: String(r.created_at) }),
+    );
+  }
+  /** Returns a new single-use sign-in token; only its hash is stored. */
+  createLoginToken(email: string, ttlMs: number): string {
+    const token = randomBytes(32).toString("base64url");
+    this.run("DELETE FROM login_tokens WHERE expires_at < ?", Date.now() - 86_400_000);
+    this.run("INSERT INTO login_tokens (token_hash, email, expires_at) VALUES (?, ?, ?)", hashToken(token), email, Date.now() + ttlMs);
+    return token;
+  }
+  /** Marks the token used and returns its email, or null if it is unknown, used or expired. */
+  consumeLoginToken(token: string): string | null {
+    const r = this.get(
+      "UPDATE login_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING email",
+      Date.now(),
+      hashToken(token),
+      Date.now(),
+    );
+    return r ? String(r.email) : null;
+  }
+  createSession(userId: string, ttlMs: number): string {
+    const token = randomBytes(32).toString("base64url");
+    this.run("DELETE FROM sessions WHERE expires_at < ?", Date.now());
+    this.run("INSERT INTO sessions (id_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)", hashToken(token), userId, now(), Date.now() + ttlMs);
+    return token;
+  }
+  sessionUser(token: string): AdminUser | null {
+    const r = this.get(
+      "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ? AND s.expires_at > ?",
+      hashToken(token),
+      Date.now(),
+    );
+    return r ? this.toUser(r) : null;
+  }
+  deleteSession(token: string) {
+    this.run("DELETE FROM sessions WHERE id_hash = ?", hashToken(token));
   }
 
   close() {
@@ -214,9 +319,11 @@ export class Store {
   setOutcome(id: string, outcome: CallOutcome) {
     this.run("UPDATE calls SET outcome_json = ?, updated_at = ? WHERE id = ?", JSON.stringify(outcome), now(), id);
   }
-  countLiveCalls(userId: string): number {
+  /** Live calls for one user, or for everyone when userId is null. */
+  countLiveCalls(userId: string | null): number {
     const marks = LIVE_STATUSES.map(() => "?").join(",");
-    return Number(this.get(`SELECT COUNT(*) AS n FROM calls WHERE user_id = ? AND status IN (${marks})`, userId, ...LIVE_STATUSES)?.n ?? 0);
+    const sql = `SELECT COUNT(*) AS n FROM calls WHERE status IN (${marks})${userId === null ? "" : " AND user_id = ?"}`;
+    return Number(this.get(sql, ...LIVE_STATUSES, ...(userId === null ? [] : [userId]))?.n ?? 0);
   }
   /** Calls left in a live status by a previous run cannot continue; mark them failed. */
   failStaleLiveCalls(): number {

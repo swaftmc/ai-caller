@@ -13,18 +13,17 @@
   "scripts": {
     "build:shared": "npm run build -w @ai-caller/shared",
     "build:web": "npm run build:shared && npm run build -w @ai-caller/web",
+    "build:server": "npm run build:shared && esbuild apps/server/src/index.ts --bundle --platform=node --format=cjs --target=node22 --outfile=apps/server/dist/server.cjs --external:bufferutil --external:utf-8-validate --log-level=warning",
+    "build": "npm run build:web && npm run build:server",
+    "start": "node apps/server/dist/server.cjs",
     "dev:server": "npm run build:shared && npm run dev -w @ai-caller/server",
-    "dev:web": "npm run dev -w @ai-caller/web",
     "check": "npm run build:shared && npm run check -w @ai-caller/server",
     "smoke": "npm run build:shared && npm run smoke -w @ai-caller/server",
-    "typecheck": "npm run build:shared && npm run typecheck -w @ai-caller/server && npm run typecheck -w @ai-caller/web",
-    "build:exe": "node scripts/build-exe.mjs"
+    "typecheck": "npm run build:shared && npm run typecheck -w @ai-caller/server && npm run typecheck -w @ai-caller/web"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "esbuild": "^0.28.2",
-    "postject": "^1.0.0-alpha.6",
-    "tar": "^7.5.22",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   }

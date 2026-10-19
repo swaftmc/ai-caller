@@ -24,6 +24,7 @@ export interface AppContext {
 }
 
 export const MAX_LIVE_CALLS = 3;
+export const MAX_SERVER_CALLS = 20;
 const MAX_ROUNDS = 4;
 const TERMINAL_TOOLS = new Set(["wait", "send_dtmf", "enter_hold_mode", "transfer_to_user", "end_call"]);
 
@@ -34,6 +35,7 @@ export interface ToolOutcome {
 
 const sessions = new Map<string, CallSession>();
 export const getSession = (callId: string) => sessions.get(callId);
+export const sessionsFor = (userId: string) => [...sessions.values()].filter((s) => s.userId === userId);
 
 /** Live state of one call: a serialized turn queue around chat-completions history, hold mode and approvals. */
 export class CallSession {
@@ -67,7 +69,6 @@ export class CallSession {
           plan: call.plan,
           holderName: profile.name,
           playbook: ctx.store.getPlaybook(userId, call.plan.company),
-          channel: call.plan.channel,
         }),
       },
     ];
@@ -387,6 +388,15 @@ export class CallSession {
 
   protected audit(kind: string, detail: Record<string, unknown>) {
     this.ctx.store.audit(this.userId, this.callId, kind, detail);
+  }
+
+  /** Stops the session without writing anything, because its user is being deleted. */
+  discard() {
+    clearTimeout(this.holdTimer);
+    for (const t of this.approvalTimers.values()) clearTimeout(t);
+    this.approvalTimers.clear();
+    this.ended = true;
+    sessions.delete(this.callId);
   }
 
   /** Ends the AI's part of the call: stops timers, expires approvals, sets the final status, writes the outcome. */

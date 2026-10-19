@@ -1,4 +1,4 @@
-// Import this module first: it hides only node:sqlite's ExperimentalWarning and loads .env files.
+// Import this module first: it hides only node:sqlite's ExperimentalWarning and loads ./.env.
 import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -12,17 +12,4 @@ process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
   return (originalEmitWarning as (...a: unknown[]) => void)(warning, ...rest);
 }) as typeof process.emitWarning;
 
-export function isPackaged(): boolean {
-  try {
-    return process.getBuiltinModule("node:sea")?.isSea() ?? false;
-  } catch {
-    return false;
-  }
-}
-
-export function exeDir(): string {
-  return path.dirname(process.execPath);
-}
-
-const envFiles = [...new Set([path.resolve(".env"), path.join(exeDir(), ".env")])].filter((f) => fs.existsSync(f));
-if (envFiles.length) dotenv.config({ path: envFiles, quiet: true });
+if (fs.existsSync(path.resolve(".env"))) dotenv.config({ path: path.resolve(".env"), quiet: true });

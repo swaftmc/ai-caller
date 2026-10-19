@@ -20,8 +20,6 @@ export const ModeSchema = z.enum(["handoff", "resolve"]);
 export type Mode = z.infer<typeof ModeSchema>;
 export const AutonomySchema = z.enum(["explain_only", "approve_decisions", "act_within_rules"]);
 export type Autonomy = z.infer<typeof AutonomySchema>;
-export const ChannelSchema = z.enum(["speakerphone", "twilio"]);
-export type Channel = z.infer<typeof ChannelSchema>;
 export const CallResultSchema = z.enum(["resolved", "partially_resolved", "unresolved"]);
 export type CallResult = z.infer<typeof CallResultSchema>;
 
@@ -40,7 +38,6 @@ export const CallPlanSchema = z.object({
   disclosure: z.boolean().default(true),
   sharedDetailKeys: z.array(z.string()).default([]),
   maxHoldMinutes: z.number().int().min(1).max(240).default(45),
-  channel: ChannelSchema.default("speakerphone"),
 });
 export type CallPlan = z.infer<typeof CallPlanSchema>;
 
@@ -112,14 +109,13 @@ export type WsEvent =
   | { type: "outcome"; callId: string; outcome: CallOutcome }
   | { type: "local_output"; callId: string; say: string; actions: BrowserAction[] };
 
-export const PROVIDERS = ["openrouter", "openai", "groq", "ollama", "anthropic", "custom"] as const;
+export const PROVIDERS = ["openrouter", "openai", "groq", "anthropic", "custom"] as const;
 export const ProviderSchema = z.enum(PROVIDERS);
 export type Provider = z.infer<typeof ProviderSchema>;
 export const PROVIDER_BASE_URLS: Record<Exclude<Provider, "custom">, string> = {
   openrouter: "https://openrouter.ai/api/v1",
   openai: "https://api.openai.com/v1",
   groq: "https://api.groq.com/openai/v1",
-  ollama: "http://localhost:11434/v1",
   anthropic: "https://api.anthropic.com/v1/",
 };
 export const SpeechProviderSchema = z.enum(["browser", "openai_compatible"]);
@@ -147,7 +143,6 @@ export interface SettingsView {
   configured: boolean;
   serverStt: boolean;
   serverTts: boolean;
-  twilioEnabled: boolean;
 }
 
 const optStr = z.string().max(500).optional();
@@ -194,6 +189,35 @@ export const AccountDetailCreateSchema = z.object({
     .regex(/^[a-z0-9_]{1,60}$/, "key must be lowercase letters, digits or _"),
   value: z.string().min(1).max(500),
 });
+
+// Accounts
+export const EmailSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(254)
+  .regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email address");
+export const LoginRequestSchema = z.object({ email: EmailSchema });
+export const LoginVerifySchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{20,100}$/, "Invalid sign-in link") });
+export const InviteCreateSchema = z.object({ email: EmailSchema });
+
+export interface Me {
+  id: string;
+  email: string;
+  name: string;
+  isAdmin: boolean;
+}
+export interface AdminUser extends Me {
+  createdAt: string;
+}
+export interface Invite {
+  email: string;
+  createdAt: string;
+}
+export interface AdminOverview {
+  users: AdminUser[];
+  pendingInvites: Invite[];
+}
 
 export interface Playbook {
   company: string;

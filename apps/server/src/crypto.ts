@@ -1,57 +1,32 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { exeDir, isPackaged } from "./env.js";
 
-/** Picks the data folder: DATA_DIR, else AICaller-data beside the exe (dev: ./data), else %LOCALAPPDATA%\AICaller. */
+/** The data folder: DATA_DIR, default ./data. */
 export function resolveDataDir(): string {
-  if (process.env.DATA_DIR) {
-    const dir = path.resolve(process.env.DATA_DIR);
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
+  const dir = path.resolve(process.env.DATA_DIR || "data");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+const validKey = (k: string | undefined) => Buffer.from(k ?? "", "base64").length === 32;
+
+/** The AES key: ENCRYPTION_KEY (base64, 32 bytes) if set, else secrets.json in the data folder, created on first run. */
+export function loadEncryptionKey(dataDir: string, env = process.env): string {
+  if (env.ENCRYPTION_KEY) {
+    if (!validKey(env.ENCRYPTION_KEY)) throw new Error("ENCRYPTION_KEY must be 32 random bytes in base64 (openssl rand -base64 32).");
+    return env.ENCRYPTION_KEY;
   }
-  const primary = isPackaged() ? path.join(exeDir(), "AICaller-data") : path.resolve("data");
-  if (isWritable(primary)) return primary;
-  const base = process.env.LOCALAPPDATA ?? path.join(os.homedir(), process.platform === "win32" ? "AppData/Local" : ".local/share");
-  const fallback = path.join(base, "AICaller");
-  fs.mkdirSync(fallback, { recursive: true });
-  return fallback;
-}
-
-function isWritable(dir: string): boolean {
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    const probe = path.join(dir, `.write-test-${process.pid}`);
-    fs.writeFileSync(probe, "");
-    fs.rmSync(probe);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export interface Secrets {
-  dashboardToken: string;
-  encryptionKey: string;
-}
-
-/** Loads secrets.json, creating it on first run; refuses to overwrite a damaged file (it would orphan encrypted data). */
-export function loadSecrets(dataDir: string): Secrets {
   const file = path.join(dataDir, "secrets.json");
   if (!fs.existsSync(file)) {
-    const fresh: Secrets = {
-      dashboardToken: randomBytes(32).toString("hex"),
-      encryptionKey: randomBytes(32).toString("base64"),
-    };
-    fs.writeFileSync(file, JSON.stringify(fresh, null, 2), { mode: 0o600, flag: "wx" });
-    return fresh;
+    const key = randomBytes(32).toString("base64");
+    fs.writeFileSync(file, JSON.stringify({ encryptionKey: key }, null, 2), { mode: 0o600, flag: "wx" });
+    return key;
   }
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<Secrets>;
-  if (!/^[0-9a-f]{64}$/.test(parsed.dashboardToken ?? "") || Buffer.from(parsed.encryptionKey ?? "", "base64").length !== 32) {
-    throw new Error(`${file} is damaged. Restore it from a backup; deleting it makes stored details and API keys unreadable.`);
-  }
-  return parsed as Secrets;
+  // Refuse to replace a damaged file: a new key would make stored details and API keys unreadable.
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { encryptionKey?: string };
+  if (!validKey(parsed.encryptionKey)) throw new Error(`${file} is damaged. Restore it from a backup.`);
+  return parsed.encryptionKey!;
 }
 
 export interface Cipher {

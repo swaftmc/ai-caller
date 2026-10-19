@@ -1,17 +1,18 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { z } from "zod";
+import { guardedFetch } from "./netguard.js";
 import { effectiveBaseUrl, type EffectiveSettings } from "./settings.js";
+
+/** An OpenAI-compatible client whose requests go through the public-address guard. */
+export function guardedClient(baseURL: string, apiKey: string, timeout = 60_000, defaultHeaders?: Record<string, string>): OpenAI {
+  return new OpenAI({ apiKey: apiKey || "not-needed", baseURL, defaultHeaders, maxRetries: 1, timeout, fetch: guardedFetch });
+}
 
 /** One chat-completions client for every provider; OpenRouter also gets its attribution headers. */
 export function makeClient(s: EffectiveSettings): OpenAI {
-  return new OpenAI({
-    apiKey: s.apiKey || "not-needed",
-    baseURL: effectiveBaseUrl(s),
-    defaultHeaders: s.provider === "openrouter" ? { "HTTP-Referer": "http://127.0.0.1", "X-Title": "AI Caller" } : undefined,
-    maxRetries: 1,
-    timeout: 60_000,
-  });
+  const attribution = { "HTTP-Referer": process.env.PUBLIC_URL || "https://github.com/swaftmc/ai-caller", "X-Title": "AI Caller" };
+  return guardedClient(effectiveBaseUrl(s), s.apiKey, 60_000, s.provider === "openrouter" ? attribution : undefined);
 }
 
 export const planningModel = (s: EffectiveSettings) => s.planningModel || s.callModel;

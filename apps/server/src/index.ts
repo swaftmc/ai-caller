@@ -1,66 +1,46 @@
 import "./env.js";
-import net from "node:net";
-import { spawn } from "node:child_process";
-import { loadSecrets, makeCipher, resolveDataDir } from "./crypto.js";
-import { DEFAULT_USER, Store } from "./db.js";
-import { isPackaged } from "./env.js";
+import { EmailSchema } from "@ai-caller/shared";
+import { loadEncryptionKey, makeCipher, resolveDataDir } from "./crypto.js";
+import { Store } from "./db.js";
 import { Hub } from "./events.js";
 import { buildApp } from "./http.js";
-import { getSettings, isConfigured } from "./settings.js";
-import { registerTwilio } from "./twilio/index.js";
+import { defaultMailer } from "./mail.js";
+import { setAllowPrivateUrls } from "./netguard.js";
 
-function portFree(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = net.createServer();
-    probe.once("error", () => resolve(false));
-    probe.listen(port, host, () => probe.close(() => resolve(true)));
-  });
-}
-
-function openBrowser(url: string) {
-  const [cmd, args] =
-    process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
-  try {
-    spawn(cmd, args as string[], { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => undefined).unref();
-  } catch {
-    // no browser available; the banner shows the URL
-  }
+function required(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) throw new Error(`${name} is not set. See deploy/aicaller.env.example.`);
+  return v;
 }
 
 async function main() {
+  const publicUrl = new URL(required("PUBLIC_URL")).origin;
+  const adminEmail = EmailSchema.parse(required("ADMIN_EMAIL"));
   const dataDir = resolveDataDir();
-  const secrets = loadSecrets(dataDir);
-  const store = new Store(dataDir, makeCipher(secrets.encryptionKey));
+  const store = new Store(dataDir, makeCipher(loadEncryptionKey(dataDir)));
   const stale = store.failStaleLiveCalls();
-  const hub = new Hub();
+  const mail = defaultMailer();
+  if (process.env.AICALLER_UNSAFE_ALLOW_PRIVATE_URLS === "1") {
+    setAllowPrivateUrls(true);
+    console.warn("WARNING: AICALLER_UNSAFE_ALLOW_PRIVATE_URLS=1 lets users point the server at local and private addresses. Development only.");
+  }
+  const app = await buildApp({ store, hub: new Hub(), publicUrl, adminEmail, mailer: mail.send });
   const host = process.env.HOST || "127.0.0.1";
-  const ctx = { store, hub };
-  const app = await buildApp({ ...ctx, secrets, host, extraChannel: (a) => registerTwilio(a, ctx) });
-
-  const first = Number(process.env.PORT) || 4317;
-  let port = 0;
-  for (let p = first; p < first + 10 && !port; p++) if (await portFree(host, p)) port = p;
-  if (!port) throw new Error(`Ports ${first}-${first + 9} are all in use. Set PORT to a free port.`);
+  const port = Number(process.env.PORT) || 4317;
   await app.listen({ host, port });
 
-  const browserHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host.includes(":") ? `[${host}]` : host;
-  const url = `http://${browserHost}:${port}/`;
-  const s = getSettings(store, DEFAULT_USER);
   console.log(
     [
-      "",
-      "  AI Caller is running",
-      `  Dashboard:   ${url}`,
-      `  Data folder: ${dataDir}`,
-      `  Model:       ${isConfigured(s) ? `${s.callModel} (${s.provider})` : "not set up yet, open Settings in the dashboard"}`,
-      stale ? `  Marked ${stale} unfinished call(s) from the last run as failed.` : "",
-      "  Keep this window open while you use AI Caller. Close it to stop.",
-      "",
+      `AI Caller is running on http://${host}:${port}`,
+      `Public address: ${publicUrl}`,
+      `Admin: ${adminEmail}`,
+      `Data folder: ${dataDir}`,
+      mail.configured ? "Email: Resend" : "Email: not configured; sign-in links are printed here instead (set RESEND_API_KEY and MAIL_FROM)",
+      stale ? `Marked ${stale} unfinished call(s) from the last run as failed.` : "",
     ]
-      .filter((l, i, all) => l || i === 0 || i === all.length - 1)
+      .filter(Boolean)
       .join("\n"),
   );
-  if (process.env.OPEN_BROWSER !== "0") openBrowser(`${url}#token=${secrets.dashboardToken}`);
 
   const stop = async () => {
     await app.close().catch(() => undefined);
@@ -72,9 +52,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`\nAI Caller could not start: ${(err as Error).stack ?? err}`);
-  if (isPackaged()) {
-    console.error("\nThis window closes in 60 seconds.");
-    setTimeout(() => process.exit(1), 60_000);
-  } else process.exit(1);
+  console.error(`AI Caller could not start: ${(err as Error).message}`);
+  process.exit(1);
 });

@@ -1,32 +1,33 @@
-// Unit check for crypto, the SQLite store, settings precedence and the Twilio guards. Run: npm run check
+// Unit check for crypto, the SQLite store (users, sign-in links, sessions), settings, the URL guard and the rate limiter. Run: npm run check
 import "../src/env.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CallPlanSchema } from "@ai-caller/shared";
-import { loadSecrets, makeCipher, maskValue, safeEqual } from "../src/crypto.js";
-import { DEFAULT_USER, Store } from "../src/db.js";
+import { CallPlanSchema, EmailSchema } from "@ai-caller/shared";
+import { RateLimiter, readCookie } from "../src/auth.js";
+import { loadEncryptionKey, makeCipher, maskValue, safeEqual } from "../src/crypto.js";
+import { Store } from "../src/db.js";
+import { assertPublicUrl, isPrivateAddress } from "../src/netguard.js";
 import { applySettingsUpdate, getSettings, settingsView } from "../src/settings.js";
-import { dialableError } from "../src/twilio/dialable.js";
-import { twilioConfig, twilioSignature, validTwilioRequest } from "../src/twilio/twilio.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aicaller-check-"));
 try {
-  // Secrets: created once, stable across loads, correct shapes.
-  const s1 = loadSecrets(dir);
-  const s2 = loadSecrets(dir);
-  assert.deepEqual(s1, s2);
-  assert.match(s1.dashboardToken, /^[0-9a-f]{64}$/);
-  assert.equal(Buffer.from(s1.encryptionKey, "base64").length, 32);
+  // Encryption key: created once, stable, env override validated, damaged file never overwritten.
+  const key = loadEncryptionKey(dir, {});
+  assert.equal(loadEncryptionKey(dir, {}), key);
+  assert.equal(Buffer.from(key, "base64").length, 32);
+  const envKey = Buffer.alloc(32, 7).toString("base64");
+  assert.equal(loadEncryptionKey(dir, { ENCRYPTION_KEY: envKey }), envKey);
+  assert.throws(() => loadEncryptionKey(dir, { ENCRYPTION_KEY: "short" }), /32 random bytes/);
   const badDir = path.join(dir, "bad");
   fs.mkdirSync(badDir);
-  fs.writeFileSync(path.join(badDir, "secrets.json"), JSON.stringify({ dashboardToken: "x", encryptionKey: "y" }));
-  assert.throws(() => loadSecrets(badDir), /damaged/, "a damaged secrets.json is never overwritten");
+  fs.writeFileSync(path.join(badDir, "secrets.json"), JSON.stringify({ encryptionKey: "y" }));
+  assert.throws(() => loadEncryptionKey(badDir, {}), /damaged/);
   assert.ok(safeEqual("abc", "abc") && !safeEqual("abc", "abd") && !safeEqual("abc", "abcd"));
 
   // AES-256-GCM: round trip, random IV, tamper detection.
-  const cipher = makeCipher(s1.encryptionKey);
+  const cipher = makeCipher(key);
   const enc = cipher.encrypt("4111 1111 1111 1234");
   assert.equal(cipher.decrypt(enc), "4111 1111 1111 1234");
   assert.notEqual(cipher.encrypt("x"), cipher.encrypt("x"));
@@ -36,108 +37,125 @@ try {
   assert.equal(maskValue("1234567890"), "••••7890");
   assert.equal(maskValue("1234567"), "••••");
 
-  // Store: details are encrypted at rest and masked in the list.
+  // Users, invites, single-use expiring sign-in links, sessions.
   const store = new Store(dir, cipher);
   assert.equal(store.db.prepare("PRAGMA journal_mode").get()?.journal_mode, "wal");
   assert.equal(store.db.prepare("PRAGMA foreign_keys").get()?.foreign_keys, 1);
-  store.updateProfile(DEFAULT_USER, { name: "Alex Doe" });
-  store.setDetail(DEFAULT_USER, "account_number", "ACCT-99887766");
+  assert.equal(EmailSchema.parse("  Alex@Example.COM "), "alex@example.com");
+  assert.ok(!EmailSchema.safeParse("not an email").success);
+  const alex = store.createUser("alex@example.com", false);
+  assert.throws(() => store.createUser("alex@example.com", false), /UNIQUE/);
+  store.addInvite("sam@example.com", alex.id);
+  assert.ok(store.hasInvite("sam@example.com") && !store.hasInvite("nobody@example.com"));
+  assert.deepEqual(store.pendingInvites().map((i) => i.email), ["sam@example.com"]);
+  const link = store.createLoginToken("sam@example.com", 60_000);
+  assert.ok(!JSON.stringify(store.db.prepare("SELECT * FROM login_tokens").all()).includes(link), "only the token hash is stored");
+  assert.equal(store.consumeLoginToken(link), "sam@example.com");
+  assert.equal(store.consumeLoginToken(link), null, "a sign-in link works once");
+  const old = store.createLoginToken("sam@example.com", -1);
+  assert.equal(store.consumeLoginToken(old), null, "an expired link is refused");
+  const sid = store.createSession(alex.id, 60_000);
+  assert.equal(store.sessionUser(sid)?.email, "alex@example.com");
+  assert.equal(store.sessionUser("wrong"), null);
+  store.deleteSession(sid);
+  assert.equal(store.sessionUser(sid), null);
+  assert.equal(store.sessionUser(store.createSession(alex.id, -1)), null, "an expired session is refused");
+  assert.equal(readCookie("a=1; aic_session=abc%3D; b=2", "aic_session"), "abc=");
+  assert.equal(readCookie(undefined, "aic_session"), null);
+
+  // Stored details are encrypted at rest and masked in the list.
+  const uid = alex.id;
+  store.updateProfile(uid, { name: "Alex Doe" });
+  store.setDetail(uid, "account_number", "ACCT-99887766");
   assert.deepEqual(
-    store.listDetails(DEFAULT_USER).map((d) => [d.key, d.masked]),
+    store.listDetails(uid).map((d) => [d.key, d.masked]),
     [["account_number", "••••7766"]],
   );
   const raw = String(store.db.prepare("SELECT value_enc FROM account_details").get()?.value_enc);
   assert.ok(!raw.includes("99887766"));
-  assert.equal(store.getDetailValue(DEFAULT_USER, "account_number"), "ACCT-99887766");
+  assert.equal(store.getDetailValue(uid, "account_number"), "ACCT-99887766");
   assert.equal(store.getDetailValue("someone-else", "account_number"), null);
 
-  // Calls, approvals, stale live calls fail at startup.
-  const plan = CallPlanSchema.parse({
-    company: "Acme",
-    phoneNumber: "+18005550100",
-    issue: "Double charge",
-    desiredOutcome: "Refund",
-  });
+  // Calls, approvals, live-call counts, stale live calls fail at startup.
+  const plan = CallPlanSchema.parse({ company: "Acme", phoneNumber: "+18005550100", issue: "Double charge", desiredOutcome: "Refund" });
   assert.equal(plan.maxHoldMinutes, 45);
-  assert.equal(plan.channel, "speakerphone");
   assert.equal(plan.disclosure, true);
-  const call = store.createCall(DEFAULT_USER, plan);
+  const call = store.createCall(uid, plan);
   assert.equal(call.status, "draft");
   store.setStatus(call.id, "on_hold");
-  assert.equal(store.countLiveCalls(DEFAULT_USER), 1);
-  const ap = store.createApproval(DEFAULT_USER, call.id, "Accept $20 credit?", ["yes", "no"]);
+  assert.equal(store.countLiveCalls(uid), 1);
+  assert.equal(store.countLiveCalls(null), 1);
+  assert.equal(store.countLiveCalls("someone-else"), 0);
+  const ap = store.createApproval(uid, call.id, "Accept $20 credit?", ["yes", "no"]);
   assert.equal(store.resolveApproval(ap.id, "approved", null)?.status, "approved");
   assert.equal(store.resolveApproval(ap.id, "denied", null), null, "a resolved approval cannot change");
-  store.createApproval(DEFAULT_USER, call.id, "Second?", []);
+  store.createApproval(uid, call.id, "Second?", []);
   assert.equal(store.failStaleLiveCalls(), 1);
-  assert.equal(store.getCall(DEFAULT_USER, call.id)?.status, "failed");
-  assert.ok(store.getCall(DEFAULT_USER, call.id)?.endedAt);
+  assert.equal(store.getCall(uid, call.id)?.status, "failed");
   assert.ok(store.listApprovals(call.id).every((a) => a.status !== "pending"));
   assert.equal(store.getCall("someone-else", call.id), null);
 
-  // Settings precedence: dashboard > env > default; keys encrypted and never in the view.
+  // Settings: saved value, else default; no environment fallback; keys encrypted and never in the view.
   process.env.LLM_MODEL = "env-model";
-  process.env.LLM_PROVIDER = "groq";
-  delete process.env.LLM_API_KEY;
-  let s = getSettings(store, DEFAULT_USER);
-  assert.equal(s.callModel, "env-model");
-  assert.equal(s.provider, "groq");
+  process.env.LLM_API_KEY = "sk-env-must-not-leak";
+  let s = getSettings(store, uid);
+  assert.equal(s.callModel, "", "environment variables are not shared with users");
+  assert.equal(s.apiKey, "");
   assert.equal(s.approvalTimeoutSeconds, 180);
-  assert.equal(settingsView(s, false).configured, false);
-  applySettingsUpdate(store, DEFAULT_USER, { callModel: "saved-model", apiKey: "sk-secret-123456" });
-  s = getSettings(store, DEFAULT_USER);
+  assert.equal(settingsView(s).configured, false);
+  applySettingsUpdate(store, uid, { provider: "groq", callModel: "saved-model", apiKey: "sk-secret-123456" });
+  s = getSettings(store, uid);
   assert.equal(s.callModel, "saved-model");
-  assert.equal(s.apiKey, "sk-secret-123456");
-  const view = settingsView(s, false);
+  const view = settingsView(s);
   assert.equal(view.hasApiKey, true);
   assert.equal(view.configured, true);
   assert.equal(view.effectiveBaseUrl, "https://api.groq.com/openai/v1");
   assert.ok(!JSON.stringify(view).includes("sk-secret"));
-  const savedKey = store.getSettingsRaw(DEFAULT_USER).apiKey;
-  assert.ok(savedKey && !savedKey.includes("sk-secret"));
-  applySettingsUpdate(store, DEFAULT_USER, { callModel: "" });
-  assert.equal(getSettings(store, DEFAULT_USER).callModel, "env-model", "\"\" removes the saved value");
-  applySettingsUpdate(store, DEFAULT_USER, { webSearch: false });
-  assert.equal(getSettings(store, DEFAULT_USER).apiKey, "sk-secret-123456", "omitted fields stay unchanged");
-  applySettingsUpdate(store, DEFAULT_USER, { apiKey: "" });
-  assert.equal(getSettings(store, DEFAULT_USER).apiKey, "");
-  applySettingsUpdate(store, DEFAULT_USER, { provider: "ollama" });
-  assert.equal(settingsView(getSettings(store, DEFAULT_USER), false).configured, true, "ollama needs no key");
+  assert.ok(!store.getSettingsRaw(uid).apiKey.includes("sk-secret"));
+  applySettingsUpdate(store, uid, { webSearch: false });
+  assert.equal(getSettings(store, uid).apiKey, "sk-secret-123456", "omitted fields stay unchanged");
+  applySettingsUpdate(store, uid, { apiKey: "" });
+  assert.equal(getSettings(store, uid).apiKey, "");
+  assert.equal(getSettings(store, store.createUser("other@example.com", false).id).callModel, "", "settings are per user");
 
-  // Twilio mode: dialable numbers, all-six-settings gate, webhook signatures.
-  assert.equal(dialableError("+18005550100"), null);
-  assert.equal(dialableError("+14165550100"), null, "Canada shares +1");
-  assert.match(String(dialableError("+442071234567")), /Country code not allowed/);
-  assert.equal(dialableError("+442071234567", ["1", "44"]), null);
-  assert.match(String(dialableError("+19005550100")), /900\/976/);
-  assert.match(String(dialableError("+12129765555")), /900\/976/);
-  assert.match(String(dialableError("+1911")), /E\.164|Emergency/);
-  assert.match(String(dialableError("+19115550100")), /N11/);
-  assert.match(String(dialableError("+12124115555")), /N11/);
-  assert.match(String(dialableError("18005550100")), /E\.164/);
-  const env = {
-    PUBLIC_URL: "https://example.ngrok.app/",
-    TWILIO_ACCOUNT_SID: "AC1",
-    TWILIO_AUTH_TOKEN: "tok",
-    TWILIO_FROM_NUMBER: "+18005550199",
-    OPENAI_API_KEY: "sk",
-    DEEPGRAM_API_KEY: "dg",
-  };
-  assert.equal(twilioConfig(env)?.publicUrl, "https://example.ngrok.app");
-  for (const k of Object.keys(env)) assert.equal(twilioConfig({ ...env, [k]: "" }), null, `Twilio stays off without ${k}`);
-  const cfg = twilioConfig(env)!;
-  const params = { CallSid: "CA123", CallStatus: "completed" };
-  const sig = twilioSignature("tok", "https://example.ngrok.app/twilio/status?callId=x", params);
-  assert.ok(validTwilioRequest(cfg, "/twilio/status?callId=x", params, sig));
-  assert.ok(!validTwilioRequest(cfg, "/twilio/status?callId=y", params, sig), "signature covers the URL");
-  assert.ok(!validTwilioRequest(cfg, "/twilio/status?callId=x", { ...params, CallStatus: "failed" }, sig), "signature covers the params");
-  assert.ok(!validTwilioRequest(cfg, "/twilio/status?callId=x", params, undefined));
+  // URL guard: https only, public addresses only.
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "nonsense"])
+    assert.ok(isPrivateAddress(ip), `${ip} is private`);
+  for (const ip of ["8.8.8.8", "104.18.2.3", "2606:4700::1111", "::ffff:8.8.8.8"]) assert.ok(!isPrivateAddress(ip), `${ip} is public`);
+  const fakeDns = (map: Record<string, string[]>) => async (h: string) => map[h] ?? [];
+  await assertPublicUrl("https://api.example.com/v1", fakeDns({ "api.example.com": ["93.184.216.34"] }));
+  await assert.rejects(assertPublicUrl("http://api.example.com/v1", fakeDns({ "api.example.com": ["93.184.216.34"] })), /https/);
+  await assert.rejects(assertPublicUrl("https://rebind.example/v1", fakeDns({ "rebind.example": ["93.184.216.34", "10.0.0.5"] })), /private/);
+  await assert.rejects(assertPublicUrl("https://127.0.0.1:11434/v1"), /private/);
+  await assert.rejects(assertPublicUrl("https://[::1]/v1"), /private/);
+  await assert.rejects(assertPublicUrl("https://user:pw@api.example.com/"), /user name/);
+  await assert.rejects(assertPublicUrl("https://nxdomain.invalid/", fakeDns({})), /resolve/);
+  await assert.rejects(assertPublicUrl("not a url"), /valid URL/);
 
-  // Data survives reopening.
+  // Rate limiter: max hits per window, then refuses until the window moves.
+  const rl = new RateLimiter();
+  assert.ok(rl.allow("k", 2, 1000, 0) && rl.allow("k", 2, 1000, 10));
+  assert.ok(!rl.allow("k", 2, 1000, 20));
+  assert.ok(rl.allow("k", 2, 1000, 1011), "old hits leave the window");
+  assert.ok(rl.allow("other", 2, 1000, 20), "keys are separate");
+
+  // Deleting a user removes all their rows.
+  assert.ok(store.deleteUser(uid));
+  for (const table of ["calls", "approvals", "transcript_entries", "account_details", "settings", "sessions", "audit_events", "playbooks"])
+    assert.equal(Number(store.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`).get(uid)?.n), 0, `${table} cleared`);
+
+  // Data survives reopening; an old exe data folder is refused.
   store.close();
-  const reopened = new Store(dir, makeCipher(loadSecrets(dir).encryptionKey));
-  assert.equal(reopened.getProfile(DEFAULT_USER).name, "Alex Doe");
+  const reopened = new Store(dir, makeCipher(loadEncryptionKey(dir, {})));
+  assert.equal(reopened.getUserByEmail("other@example.com")?.email, "other@example.com");
   reopened.close();
+  const oldDir = path.join(dir, "old");
+  fs.mkdirSync(oldDir);
+  const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
+  const oldDb = new DatabaseSync(path.join(oldDir, "aicaller.db"));
+  oldDb.exec("CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT, callback_phone TEXT, created_at TEXT)");
+  oldDb.close();
+  assert.throws(() => new Store(oldDir, cipher), /old AICaller\.exe/);
   console.log("check: all assertions passed");
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });

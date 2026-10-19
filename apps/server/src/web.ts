@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { isPackaged } from "./env.js";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -18,13 +17,8 @@ const TYPES: Record<string, string> = {
 
 type Lookup = (rel: string) => Buffer | null;
 
-/** Static dashboard files: Node SEA assets in the exe, apps/web/out in dev. */
+/** Static dashboard files from the Next.js export (WEB_DIR, default apps/web/out). */
 function webSource(): Lookup | null {
-  if (isPackaged()) {
-    const sea = process.getBuiltinModule("node:sea");
-    const files = new Set<string>(JSON.parse(sea.getAsset("web-manifest.json", "utf8")));
-    return (rel) => (files.has(rel) ? Buffer.from(sea.getAsset(`web/${rel}`)) : null);
-  }
   const root = [process.env.WEB_DIR, "apps/web/out", "../web/out"]
     .filter((d): d is string => Boolean(d))
     .map((d) => path.resolve(d))

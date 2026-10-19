@@ -30,25 +30,6 @@ export interface EffectiveSettings {
 }
 type Key = keyof EffectiveSettings;
 
-const ENV: Record<Key, string> = {
-  provider: "LLM_PROVIDER",
-  apiKey: "LLM_API_KEY",
-  callModel: "LLM_MODEL",
-  planningModel: "LLM_PLANNING_MODEL",
-  classifierModel: "LLM_CLASSIFIER_MODEL",
-  baseUrl: "LLM_BASE_URL",
-  webSearch: "LLM_WEB_SEARCH",
-  approvalTimeoutSeconds: "APPROVAL_TIMEOUT_SECONDS",
-  sttProvider: "STT_PROVIDER",
-  sttUrl: "STT_URL",
-  sttApiKey: "STT_API_KEY",
-  sttModel: "STT_MODEL",
-  ttsProvider: "TTS_PROVIDER",
-  ttsUrl: "TTS_URL",
-  ttsApiKey: "TTS_API_KEY",
-  ttsModel: "TTS_MODEL",
-  ttsVoice: "TTS_VOICE",
-};
 const DEFAULTS: Record<Key, string> = {
   provider: "openrouter",
   apiKey: "",
@@ -89,12 +70,12 @@ const UPDATE_TO_KEY: Record<keyof SettingsUpdate, Key> = {
   ttsVoice: "ttsVoice",
 };
 
-/** Resolves each setting with precedence: saved in dashboard > environment/.env > default. */
+/** A user's settings: what they saved, else the default. There is no server-wide fallback, so no user can use another's key. */
 export function getSettings(store: Store, userId: string): EffectiveSettings {
   const saved = store.getSettingsRaw(userId);
   const pick = (k: Key): string => {
     if (saved[k] !== undefined) return SECRET_KEYS.has(k) ? store.cipher.decrypt(saved[k]) : saved[k];
-    return process.env[ENV[k]]?.trim() || DEFAULTS[k];
+    return DEFAULTS[k];
   };
   const provider = ProviderSchema.catch("openrouter").parse(pick("provider"));
   const timeout = Number.parseInt(pick("approvalTimeoutSeconds"), 10);
@@ -124,14 +105,14 @@ export function effectiveBaseUrl(s: EffectiveSettings): string {
 }
 
 export function isConfigured(s: EffectiveSettings): boolean {
-  return Boolean(s.callModel && effectiveBaseUrl(s) && (s.apiKey || s.provider === "ollama"));
+  return Boolean(s.callModel && effectiveBaseUrl(s) && s.apiKey);
 }
 
 export const sttEnabled = (s: EffectiveSettings) => s.sttProvider === "openai_compatible" && Boolean(s.sttUrl && s.sttModel);
 export const ttsEnabled = (s: EffectiveSettings) => s.ttsProvider === "openai_compatible" && Boolean(s.ttsUrl && s.ttsModel);
 
 /** Browser-safe view: API keys are reduced to hasKey booleans. */
-export function settingsView(s: EffectiveSettings, twilioEnabled: boolean): SettingsView {
+export function settingsView(s: EffectiveSettings): SettingsView {
   return {
     provider: s.provider,
     hasApiKey: Boolean(s.apiKey),
@@ -154,7 +135,6 @@ export function settingsView(s: EffectiveSettings, twilioEnabled: boolean): Sett
     configured: isConfigured(s),
     serverStt: sttEnabled(s),
     serverTts: ttsEnabled(s),
-    twilioEnabled,
   };
 }
 
