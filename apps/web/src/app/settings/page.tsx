@@ -25,7 +25,6 @@ const LABELS: Record<Provider, string> = {
   openrouter: "OpenRouter",
   openai: "OpenAI",
   groq: "Groq",
-  ollama: "Ollama (local, no key)",
   anthropic: "Anthropic (OpenAI-compatible endpoint)",
   custom: "Custom OpenAI-compatible",
 };
@@ -101,6 +100,10 @@ export default function SettingsPage() {
       <h1>Settings</h1>
       <div className="card stack">
         <h2>Language model</h2>
+        <p className="muted">
+          Use your own provider account. Keys are encrypted on the server and never shown again. Custom URLs must be public https addresses; local
+          servers such as Ollama on your own computer can&rsquo;t be reached from here.
+        </p>
         <div className="grid">
           <label>
             Provider
@@ -112,7 +115,7 @@ export default function SettingsPage() {
               ))}
             </select>
           </label>
-          {keyInput("apiKey", view.hasApiKey, provider === "ollama" ? "API key (not needed for Ollama)" : "API key")}
+          {keyInput("apiKey", view.hasApiKey, "API key")}
           <label>
             Call model
             <input value={form.callModel ?? ""} onChange={(e) => set("callModel", e.target.value)} placeholder="e.g. openai/gpt-4o-mini" />

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { AuthGate } from "@/components/AuthGate";
 import { Shell } from "@/components/Shell";
-import { TokenGate } from "@/components/TokenGate";
 import "./globals.css";
 
 export const metadata: Metadata = { title: "AI Caller" };
@@ -10,9 +10,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <TokenGate>
+        <AuthGate>
           <Shell>{children}</Shell>
-        </TokenGate>
+        </AuthGate>
       </body>
     </html>
   );

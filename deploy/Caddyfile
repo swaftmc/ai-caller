@@ -1,0 +1,5 @@
+# /etc/caddy/Caddyfile. Replace the host name with yours; Caddy gets and renews the HTTPS certificate.
+caller.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:4317
+}

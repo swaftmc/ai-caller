@@ -109,6 +109,24 @@ export default function ProfilePage() {
           </button>
         </form>
       </div>
+      <div className="card stack">
+        <h2>Delete my account</h2>
+        <p className="muted">Deletes your calls, transcripts, playbooks, settings, API keys and stored details from this server. It cannot be undone.</p>
+        <div>
+          <button
+            className="danger"
+            onClick={() => {
+              if (!confirm("Delete your AI Caller account and everything in it? This cannot be undone.")) return;
+              void run(async () => {
+                await api("/me", "DELETE");
+                location.replace("/login/");
+              }, "Account deleted.");
+            }}
+          >
+            Delete my account
+          </button>
+        </div>
+      </div>
       {msg && <p className="muted">{msg}</p>}
       {error && <pre className="error">{error}</pre>}
     </>

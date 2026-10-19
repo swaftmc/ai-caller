@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef } from "react";
 import type { WsEvent } from "@ai-caller/shared";
-import { getToken, wsUrl } from "./api";
+import { wsUrl } from "./api";
 
 export type LiveEvent = WsEvent | { type: "ready" };
 type Listener = (e: LiveEvent) => void;
@@ -15,7 +15,6 @@ function connect() {
   clearTimeout(retry);
   const ws = new WebSocket(wsUrl());
   socket = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token: getToken() }));
   ws.onmessage = (msg) => {
     let event: LiveEvent;
     try {
@@ -27,7 +26,9 @@ function connect() {
   };
   ws.onclose = (e) => {
     if (socket === ws) socket = null;
-    if (listeners.size) retry = setTimeout(connect, e.code === 4401 ? 5000 : 1500);
+    // 4401: the session ended; an API call will send the page to sign-in.
+    if (e.code === 4401) window.dispatchEvent(new Event("aicaller-unauthorized"));
+    else if (listeners.size) retry = setTimeout(connect, 1500);
   };
 }
 

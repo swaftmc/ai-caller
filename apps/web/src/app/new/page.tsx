@@ -9,7 +9,6 @@ import {
   type CallRecord,
   type ChatMessage,
   type IntakeReply,
-  type SettingsView,
 } from "@ai-caller/shared";
 import { PlanEditor, cleanPlan } from "@/components/PlanEditor";
 import { api } from "@/lib/api";
@@ -23,12 +22,10 @@ export default function NewCallPage() {
   const [plan, setPlan] = useState<CallPlan | null>(null);
   const [draftId, setDraftId] = useState<string | null>(null);
   const [detailKeys, setDetailKeys] = useState<string[]>([]);
-  const [twilio, setTwilio] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api<{ details: AccountDetailView[] }>("/profile").then((p) => setDetailKeys(p.details.map((d) => d.key)), () => undefined);
-    api<SettingsView>("/settings").then((s) => setTwilio(s.twilioEnabled), () => undefined);
   }, []);
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ block: "end" });
@@ -114,7 +111,7 @@ export default function NewCallPage() {
       {plan && (
         <div className="card">
           <h2>Review the plan</h2>
-          <PlanEditor plan={plan} onChange={setPlan} detailKeys={detailKeys} twilioEnabled={twilio} />
+          <PlanEditor plan={plan} onChange={setPlan} detailKeys={detailKeys} />
           <div className="row" style={{ marginTop: "1rem" }}>
             <button className="big" onClick={() => void start()} disabled={busy}>
               Start call

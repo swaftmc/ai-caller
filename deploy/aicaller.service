@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Caller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aicaller
+Group=aicaller
+WorkingDirectory=/opt/ai-caller
+EnvironmentFile=/etc/aicaller.env
+ExecStart=/usr/bin/node apps/server/dist/server.cjs
+Restart=on-failure
+RestartSec=3
+
+# Hardening: read-only system, writable data folder only.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/aicaller
+StateDirectory=aicaller
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

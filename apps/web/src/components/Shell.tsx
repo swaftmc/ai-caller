@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import type { CallStatus, SettingsView } from "@ai-caller/shared";
 import { api, SETTINGS_CHANGED } from "@/lib/api";
+import { useMe } from "./AuthGate";
 
 const LINKS = [
   ["/", "Calls"],
@@ -14,9 +15,11 @@ const LINKS = [
 ] as const;
 
 export function Shell({ children }: { children: ReactNode }) {
-  const path = usePathname();
+  const path = usePathname() ?? "/";
+  const me = useMe();
   const [configured, setConfigured] = useState(true);
   useEffect(() => {
+    if (!me) return;
     const load = () =>
       api<SettingsView>("/settings")
         .then((s) => setConfigured(s.configured))
@@ -24,16 +27,23 @@ export function Shell({ children }: { children: ReactNode }) {
     void load();
     window.addEventListener(SETTINGS_CHANGED, load);
     return () => window.removeEventListener(SETTINGS_CHANGED, load);
-  }, []);
+  }, [me]);
+  if (!me) return <main>{children}</main>;
+  const links = me.isAdmin ? [...LINKS, ["/admin/", "Admin"] as const] : LINKS;
+  const signOut = () => api("/auth/logout", "POST", {}).finally(() => location.replace("/login/"));
   return (
     <>
       <nav className="nav">
         <span className="brand">AI Caller</span>
-        {LINKS.map(([href, label]) => (
-          <Link key={href} href={href} className={path === href || (href !== "/" && path?.startsWith(href)) ? "active" : ""}>
+        {links.map(([href, label]) => (
+          <Link key={href} href={href} className={path === href || (href !== "/" && path.startsWith(href)) ? "active" : ""}>
             {label}
           </Link>
         ))}
+        <span className="muted">{me.email}</span>
+        <button className="secondary" onClick={() => void signOut()}>
+          Sign out
+        </button>
       </nav>
       <main>
         {!configured && path !== "/settings/" && (

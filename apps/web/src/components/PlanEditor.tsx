@@ -17,12 +17,10 @@ export function PlanEditor({
   plan,
   onChange,
   detailKeys,
-  twilioEnabled,
 }: {
   plan: CallPlan;
   onChange: (p: CallPlan) => void;
   detailKeys: string[];
-  twilioEnabled: boolean;
 }) {
   const set = <K extends keyof CallPlan>(k: K, v: CallPlan[K]) => onChange({ ...plan, [k]: v });
   const lines = (v: string) => v.split("\n");
@@ -118,15 +116,6 @@ export function PlanEditor({
             onChange={(e) => set("maxHoldMinutes", Math.max(1, Math.min(240, Number(e.target.value) || 1)))}
           />
         </label>
-        {twilioEnabled && (
-          <label>
-            Channel
-            <select value={plan.channel} onChange={(e) => set("channel", e.target.value as CallPlan["channel"])}>
-              <option value="speakerphone">Speakerphone (I dial on my phone)</option>
-              <option value="twilio">Twilio (the server dials)</option>
-            </select>
-          </label>
-        )}
       </div>
       <p className="muted">Whatever you choose, the AI always says it is an AI assistant if anyone asks, and never claims to be you.</p>
     </div>
